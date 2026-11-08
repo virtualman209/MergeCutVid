@@ -1,7 +1,7 @@
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
-title Cai dat VideoTool
+title Cai dat MergenCut
 
 python -c "import tkinter" >nul 2>nul
 if errorlevel 1 (
@@ -23,5 +23,6 @@ if errorlevel 1 (
 :install
 call register.bat
 echo.
-echo Xong! Chuot phai vao file video (Windows 11: "Show more options") ^> VideoTool.
+echo Xong! Mo MergenCut tu Start Menu / Desktop, hoac chuot phai vao file video ^> MergenCut.
+echo Muon ghim len Taskbar: mo Start, tim "MergenCut", chuot phai ^> Pin to taskbar.
 pause

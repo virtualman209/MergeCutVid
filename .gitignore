@@ -5,3 +5,5 @@ update_state.json
 bin/*
 !bin/.keep
 compress_prefs.json
+settings.json
+update_error.txt

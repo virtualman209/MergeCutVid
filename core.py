@@ -1,4 +1,4 @@
-"""VideoTool core: ffmpeg/ffprobe helpers (không phụ thuộc GUI)."""
+"""MergenCut core: ffmpeg/ffprobe helpers (không phụ thuộc GUI)."""
 import glob
 import json
 import os

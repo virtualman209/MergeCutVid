@@ -1,4 +1,4 @@
-"""Tạo cấu hình + file .reg cho menu chuột phải VideoTool.
+"""Tạo cấu hình + file .reg cho menu chuột phải MergenCut.
 
 Python bản Microsoft Store bị Windows cách ly: ghi registry qua winreg sẽ vào
 một bản sao riêng mà Explorer không thấy. Vì vậy script này chỉ IN nội dung
@@ -16,10 +16,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import core  # noqa: E402
 
 ROOT = r"HKEY_CURRENT_USER\Software\Classes"
-KEY = "VideoTool"
+KEY = "MergenCut"
 APP = core.APP_DIR
-SCRIPT = os.path.join(APP, "videotool.pyw")
-ICON = os.path.join(APP, "videotool.ico")
+SCRIPT = os.path.join(APP, "mergencut.pyw")
+ICON = os.path.join(APP, "mergencut.ico")
 
 
 def pythonw():
@@ -56,10 +56,10 @@ def reg_text(install=True):
     icon = f'"Icon"="{esc(ICON)}"' if os.path.isfile(ICON) else None
     for base in bases():
         root = f"{base}\\shell\\{KEY}"
-        out += [f"[-{root}]", ""]                       # xoá menu cũ
+        out += [f"[-{root}]", f"[-{base}\\shell\\VideoTool]", ""]   # xoá menu cũ (cả tên cũ VideoTool)
         if not install:
             continue
-        out += [f"[{root}]", '"MUIVerb"="VideoTool"', '"SubCommands"=""', '"MultiSelectModel"="Player"']
+        out += [f"[{root}]", '"MUIVerb"="MergenCut"', '"SubCommands"=""', '"MultiSelectModel"="Player"']
         out += [icon, ""] if icon else [""]
         for n, (verb, label, command) in enumerate(menu_items(base), 1):
             k = f"{root}\\shell\\{n:02d}{verb}"
@@ -93,6 +93,8 @@ if __name__ == "__main__":
     arg = sys.argv[1] if len(sys.argv) > 1 else "--config"
     if arg == "--config":
         write_config()
+    elif arg == "--pythonw":
+        print(pythonw())
     elif arg in ("--reg", "--unreg"):
         sys.stdout.buffer.write(reg_text(arg == "--reg").encode("utf-16"))   # có BOM
         sys.stdout.flush()

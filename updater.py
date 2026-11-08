@@ -1,4 +1,4 @@
-"""Tự cập nhật VideoTool từ GitHub.
+"""Tự cập nhật MergenCut từ GitHub.
 
 So sánh version.txt trên GitHub với bản trên máy. Nếu có bản mới thì tải zip
 của nhánh main về và chép đè vào thư mục tool (giữ nguyên config.json và bin/).
@@ -18,7 +18,7 @@ REPO = "virtualman209/MergeCutVid"
 BRANCH = "main"
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 STATE = os.path.join(APP_DIR, "update_state.json")
-KEEP = {"config.json", "update_state.json", "compress_prefs.json", "bin", ".git"}
+KEEP = {"config.json", "update_state.json", "compress_prefs.json", "settings.json", "update_error.txt", "bin", ".git"}
 CHECK_EVERY = 6 * 3600          # tự kiểm tra tối đa 6 tiếng / lần
 RAW = f"https://raw.githubusercontent.com/{REPO}/{BRANCH}/version.txt"
 ZIP = f"https://codeload.github.com/{REPO}/zip/refs/heads/{BRANCH}"
@@ -43,7 +43,7 @@ def local_version():
 
 def _get(url, timeout=6):
     req = urllib.request.Request(url + ("&" if "?" in url else "?") + f"t={int(time.time())}",
-                                 headers={"User-Agent": "VideoTool-updater", "Cache-Control": "no-cache"})
+                                 headers={"User-Agent": "MergenCut-updater", "Cache-Control": "no-cache"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.read()
 
@@ -87,6 +87,27 @@ def skip(version):
 
 
 def apply_update():
+    """Cập nhật. Trên Windows giao cho update.bat (PowerShell) để file được ghi thật,
+    không bị Python bản Microsoft Store cách ly; rồi chờ version.txt đổi."""
+    if os.name == "nt" and os.path.isfile(os.path.join(APP_DIR, "update.bat")):
+        before = local_version()
+        err_file = os.path.join(APP_DIR, "update_error.txt")
+        subprocess.Popen(["explorer.exe", os.path.join(APP_DIR, "update.bat")])
+        t0 = time.time()
+        while time.time() - t0 < 300:
+            time.sleep(1)
+            if _vtuple(local_version()) > _vtuple(before):
+                time.sleep(3)          # chờ register.bat ghi menu xong
+                _save_state(skip=None)
+                return local_version()
+            if time.time() - t0 > 5 and os.path.isfile(err_file):
+                with open(err_file, encoding="utf-8-sig", errors="replace") as f:
+                    raise RuntimeError(f.read().strip() or "update.ps1 lỗi")
+        raise RuntimeError("Quá thời gian chờ cập nhật. Hãy chạy lại lệnh cài đặt trong PowerShell.")
+    return _apply_update_python()
+
+
+def _apply_update_python():
     """Tải và chép đè bản mới. Trả về version mới."""
     data = _get(ZIP, timeout=60)
     tmp = tempfile.mkdtemp(prefix="videotool_upd_")
@@ -95,7 +116,7 @@ def apply_update():
             z.extractall(tmp)
         roots = [os.path.join(tmp, d) for d in os.listdir(tmp)]
         src = roots[0] if len(roots) == 1 and os.path.isdir(roots[0]) else tmp
-        if not os.path.isfile(os.path.join(src, "videotool.pyw")):
+        if not any(os.path.isfile(os.path.join(src, f)) for f in ("mergencut.pyw", "videotool.pyw")):
             raise RuntimeError("Gói cập nhật không hợp lệ.")
         for name in os.listdir(src):
             if name in KEEP:

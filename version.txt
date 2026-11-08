@@ -1,3 +1,5 @@
-1.2.0
-- Thêm "Nén video (giảm dung lượng)": H.265 / AV1 / H.264, hỗ trợ GPU NVIDIA/Intel/AMD
-- Ước tính dung lượng trước khi nén, nén nhiều file một lúc, nén cả thư mục
+1.3.0
+- Đổi tên thành MergenCut
+- Màn hình chính: mở từ Start Menu / Desktop / Taskbar, kéo thả file vào là dùng
+- Kéo thả file / thư mục vào mọi cửa sổ
+- Tuỳ chọn: tắt hỏi mở thư mục khi xong, tự đóng cửa sổ khi xong
