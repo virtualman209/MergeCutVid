@@ -21,7 +21,7 @@ if errorlevel 1 (
 )
 
 :install
-python install.py
+call register.bat
 echo.
 echo Xong! Chuot phai vao file video (Windows 11: "Show more options") ^> VideoTool.
 pause

@@ -107,12 +107,10 @@ def apply_update():
                 shutil.copy2(s, d)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
-    # Cài lại menu chuột phải (phòng khi bản mới thêm/đổi menu)
+    # Cài lại menu chuột phải (phòng khi bản mới thêm/đổi menu).
+    # Mở register.bat qua explorer.exe để nó chạy ngoài vùng cách ly của Python bản Store.
     if os.name == "nt":
-        py = os.path.join(os.path.dirname(sys.executable), "python.exe")
-        subprocess.run([py if os.path.isfile(py) else sys.executable,
-                        os.path.join(APP_DIR, "install.py"), "--quiet"],
-                       creationflags=0x08000000, capture_output=True)
+        subprocess.Popen(["explorer.exe", os.path.join(APP_DIR, "register.bat")])
     _save_state(skip=None)
     return local_version()
 
