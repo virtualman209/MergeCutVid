@@ -130,7 +130,7 @@ class ProgressMixin:
         return bar
 
     def run_job(self, label, fn, out):
-        self._busy, self._cancel = True, False
+        self._busy, self._cancel, self._label = True, False, None
         self.set_busy(True)
         t0 = time.time()
 
@@ -138,20 +138,20 @@ class ProgressMixin:
             el = time.time() - t0
             eta = f" · còn ~{int(el / p - el)}s" if p > 0.02 else ""
             self.root.after(0, lambda: (self.pvar.set(p * 100),
-                                        self.plabel.config(text=f"{label} {p * 100:4.0f}%{eta}")))
+                                        self.plabel.config(text=f"{getattr(self, '_label', None) or label} {p * 100:4.0f}%{eta}")))
 
         def work():
-            err = None
+            err, res = None, None
             try:
-                fn(prog, lambda: self._cancel)
+                res = fn(prog, lambda: self._cancel)
             except core.Cancelled:
                 err = "cancel"
             except Exception as e:  # noqa: BLE001
                 err = str(e)
-            self.root.after(0, lambda: self.job_done(err, out, time.time() - t0))
+            self.root.after(0, lambda: self.job_done(err, out, time.time() - t0, res))
         threading.Thread(target=work, daemon=True).start()
 
-    def job_done(self, err, out, secs):
+    def job_done(self, err, out, secs, res=None):
         self._busy = False
         self.set_busy(False)
         if err == "cancel":
@@ -168,8 +168,12 @@ class ProgressMixin:
             messagebox.showerror("VideoTool", err, parent=self.root)
             return
         self.plabel.config(text=f"Xong trong {secs:.1f}s")
-        if messagebox.askyesno("VideoTool", f"Đã lưu:\n{out}\n\nMở thư mục chứa file?", parent=self.root):
-            reveal(out)
+        msg = res if isinstance(res, str) else f"Đã lưu:\n{out}"
+        target = out or getattr(self, "on_job_reveal", lambda: None)()
+        if not target:
+            messagebox.showinfo("VideoTool", msg, parent=self.root)
+        elif messagebox.askyesno("VideoTool", msg + "\n\nMở thư mục chứa file?", parent=self.root):
+            reveal(target)
 
     def on_close(self):
         if self._busy and not messagebox.askyesno("VideoTool", "Đang xử lý. Huỷ và thoát?", parent=self.root):
@@ -207,7 +211,7 @@ class MergeWindow(ProgressMixin):
         side = ttk.Frame(mid, padding=(8, 0, 0, 0))
         side.pack(side="left", fill="y")
         for txt, cmd in (("▲ Lên", lambda: self.move(-1)), ("▼ Xuống", lambda: self.move(1)),
-                         ("＋ Thêm…", self.add), ("✕ Bỏ", self.remove),
+                         ("+ Thêm…", self.add), ("✕ Bỏ", self.remove),
                          ("A→Z Sắp lại", self.resort), ("▶ Xem", self.preview)):
             ttk.Button(side, text=txt, command=cmd, width=13).pack(pady=2)
 
@@ -668,6 +672,340 @@ class EditWindow(ProgressMixin):
             self.run_job("Đang cắt", lambda p, c: core.export_fast(self.path, keep, out, p, c), out)
 
 
+# ============================================================ cửa sổ NÉN
+class CompressWindow(ProgressMixin):
+    def __init__(self, root, paths):
+        self.root = root
+        root.title("VideoTool — Nén video")
+        center(root, 820, 620)
+        self.files = sorted([p for p in paths if os.path.isfile(p) and core.is_video(p)], key=core.natural_key)
+        self.infos = {}
+        self.encoders = None
+        cfg = self.load_prefs()
+
+        main = ttk.Frame(root, padding=12)
+        main.pack(fill="both", expand=True)
+
+        mid = ttk.Frame(main)
+        mid.pack(fill="both", expand=True)
+        cols = ("name", "dur", "size", "info", "est")
+        self.tree = ttk.Treeview(mid, columns=cols, show="headings", height=7)
+        for c, t, w in (("name", "Tên file", 250), ("dur", "Thời lượng", 75), ("size", "Dung lượng", 80),
+                        ("info", "Định dạng", 190), ("est", "Sau khi nén", 150)):
+            self.tree.heading(c, text=t)
+            self.tree.column(c, width=w, anchor="w")
+        sb = ttk.Scrollbar(mid, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=sb.set)
+        self.tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="left", fill="y")
+        side = ttk.Frame(mid, padding=(8, 0, 0, 0))
+        side.pack(side="left", fill="y")
+        ttk.Button(side, text="+ Thêm…", width=11, command=self.add).pack(pady=2)
+        ttk.Button(side, text="✕ Bỏ", width=11, command=self.remove).pack(pady=2)
+        ttk.Button(side, text="▶ Xem", width=11, command=self.preview).pack(pady=2)
+
+        opt = ttk.LabelFrame(main, text="Tuỳ chọn nén", padding=10)
+        opt.pack(fill="x", pady=10)
+        opt.columnconfigure(1, weight=1)
+
+        ttk.Label(opt, text="Codec:").grid(row=0, column=0, sticky="nw", pady=2)
+        self.codec = tk.StringVar(value=cfg.get("codec", "hevc"))
+        cf = ttk.Frame(opt)
+        cf.grid(row=0, column=1, sticky="w")
+        for k, (label, _, _) in core.CODECS.items():
+            ttk.Radiobutton(cf, text=label, variable=self.codec, value=k, command=self.opts_changed).pack(anchor="w")
+
+        ttk.Label(opt, text="Chất lượng:").grid(row=1, column=0, sticky="w", pady=(8, 2))
+        self.quality = tk.StringVar(value=cfg.get("quality", "balanced"))
+        qf = ttk.Frame(opt)
+        qf.grid(row=1, column=1, sticky="w", pady=(8, 2))
+        for k in core.QUALITY_LEVELS:
+            ttk.Radiobutton(qf, text=core.QUALITY_LABELS[k], variable=self.quality, value=k,
+                            command=self.opts_changed).pack(side="left", padx=(0, 12))
+
+        ttk.Label(opt, text="Tốc độ:").grid(row=2, column=0, sticky="w", pady=2)
+        self.speed = tk.StringVar(value=cfg.get("speed", "medium"))
+        sf = ttk.Frame(opt)
+        sf.grid(row=2, column=1, sticky="w")
+        for k in core.SPEED_LEVELS:
+            ttk.Radiobutton(sf, text=core.SPEED_LABELS[k], variable=self.speed, value=k,
+                            command=self.opts_changed).pack(side="left", padx=(0, 12))
+
+        ttk.Label(opt, text="Phần cứng:").grid(row=3, column=0, sticky="w", pady=2)
+        self.gpu = tk.StringVar(value="cpu")
+        gf = ttk.Frame(opt)
+        gf.grid(row=3, column=1, sticky="w")
+        self.gpu_box = ttk.Combobox(gf, textvariable=self.gpu, state="readonly", width=46)
+        self.gpu_box.pack(side="left")
+        self.gpu_box.bind("<<ComboboxSelected>>", lambda e: self.opts_changed())
+        self.gpu_hint = ttk.Label(gf, text="  đang dò GPU…", style="Hint.TLabel")
+        self.gpu_hint.pack(side="left")
+
+        ttk.Label(opt, text="Độ phân giải:").grid(row=4, column=0, sticky="w", pady=2)
+        self.maxh = tk.StringVar(value=cfg.get("maxh", "Giữ nguyên"))
+        rf = ttk.Frame(opt)
+        rf.grid(row=4, column=1, sticky="w")
+        ttk.Combobox(rf, textvariable=self.maxh, state="readonly", width=14,
+                     values=("Giữ nguyên", "Tối đa 1440p", "Tối đa 1080p", "Tối đa 720p", "Tối đa 480p")
+                     ).pack(side="left")
+        ttk.Label(rf, text="   Âm thanh:").pack(side="left")
+        self.audio = tk.StringVar(value=cfg.get("audio", "AAC 128 kbps"))
+        ttk.Combobox(rf, textvariable=self.audio, state="readonly", width=16,
+                     values=("AAC 96 kbps", "AAC 128 kbps", "AAC 192 kbps", "Giữ nguyên")).pack(side="left")
+        for w in rf.winfo_children():
+            if isinstance(w, ttk.Combobox):
+                w.bind("<<ComboboxSelected>>", lambda e: self.opts_changed())
+
+        self.skip_bigger = tk.BooleanVar(value=True)
+        ttk.Checkbutton(opt, text="Nếu file nén ra không nhỏ hơn bản gốc thì bỏ, không lưu",
+                        variable=self.skip_bigger).grid(row=5, column=1, sticky="w", pady=(6, 0))
+
+        self.status = ttk.Label(main, text="", style="Hint.TLabel", wraplength=780)
+        self.status.pack(anchor="w")
+
+        bottom = ttk.Frame(main)
+        bottom.pack(fill="x", pady=(8, 0))
+        self.build_progress(bottom).pack(side="left", fill="x", expand=True)
+        self.btn_cancel = ttk.Button(bottom, text="Huỷ", state="disabled",
+                                     command=lambda: setattr(self, "_cancel", True))
+        self.btn_cancel.pack(side="right", padx=(8, 0))
+        self.btn_go = ttk.Button(bottom, text="Nén ngay", style="Big.TButton", command=self.go)
+        self.btn_go.pack(side="right", padx=(8, 0))
+        self.btn_est = ttk.Button(bottom, text="Ước tính dung lượng", command=self.estimate)
+        self.btn_est.pack(side="right", padx=(8, 0))
+
+        root.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.estimates = {}
+        self.refresh()
+        threading.Thread(target=self.probe_all, daemon=True).start()
+        threading.Thread(target=self.detect_gpu, args=(cfg.get("gpu", "cpu"),), daemon=True).start()
+
+    # ---- prefs
+    PREFS = os.path.join(core.APP_DIR, "compress_prefs.json")
+
+    def load_prefs(self):
+        try:
+            with open(self.PREFS, encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def save_prefs(self):
+        try:
+            with open(self.PREFS, "w", encoding="utf-8") as f:
+                json.dump({"codec": self.codec.get(), "quality": self.quality.get(), "speed": self.speed.get(),
+                           "gpu": self.gpu_key(), "maxh": self.maxh.get(), "audio": self.audio.get()}, f)
+        except OSError:
+            pass
+
+    # ---- options
+    def detect_gpu(self, want):
+        try:
+            encs = core.available_encoders()
+        except Exception:
+            encs = set()
+        self.root.after(0, lambda: self._gpu_ready(encs, want))
+
+    def _gpu_ready(self, encs, want):
+        self.encoders = encs
+        self._want_gpu = want
+        self.gpu_hint.config(text="")
+        self.opts_changed()
+
+    def gpu_choices(self):
+        codec = self.codec.get()
+        _, sw, hw = core.CODECS[codec]
+        ch = [("cpu", "CPU — nén tốt nhất, file nhỏ nhất (khuyên dùng)")]
+        for g, enc in hw.items():
+            if self.encoders and enc in self.encoders:
+                ch.append((g, f"GPU {core.GPU_LABELS[g]} — nhanh gấp nhiều lần, file lớn hơn ~15-30%"))
+        return ch
+
+    def gpu_key(self):
+        for k, label in self.gpu_choices():
+            if label == self.gpu.get():
+                return k
+        return "cpu"
+
+    def opts_changed(self):
+        if self.encoders is not None:
+            ch = self.gpu_choices()
+            cur = getattr(self, "_want_gpu", None) or self.gpu_key()
+            self._want_gpu = None
+            self.gpu_box.config(values=[l for _, l in ch])
+            self.gpu.set(dict(ch).get(cur, ch[0][1]))
+            if len(ch) == 1:
+                self.gpu_hint.config(text="  (không có GPU hỗ trợ codec này)")
+            else:
+                self.gpu_hint.config(text="")
+            sw = core.CODECS[self.codec.get()][1]
+            if sw not in self.encoders and self.gpu_key() == "cpu":
+                self.gpu_hint.config(text=f"  ⚠ ffmpeg thiếu {sw}")
+        self.estimates = {}
+        self.refresh()
+
+    def opts(self):
+        maxh = {"Tối đa 1440p": 1440, "Tối đa 1080p": 1080, "Tối đa 720p": 720, "Tối đa 480p": 480}.get(self.maxh.get(), 0)
+        audio = {"AAC 96 kbps": "aac96", "AAC 192 kbps": "aac192", "Giữ nguyên": "copy"}.get(self.audio.get(), "aac128")
+        g = self.gpu_key()
+        return dict(codec=self.codec.get(), quality=self.quality.get(), speed=self.speed.get(),
+                    gpu=None if g == "cpu" else g, max_h=maxh, audio=audio)
+
+    # ---- list
+    def refresh(self):
+        self.tree.delete(*self.tree.get_children())
+        tot_src = tot_est = 0
+        for n, f in enumerate(self.files):
+            info = self.infos.get(f)
+            size = os.path.getsize(f) if os.path.exists(f) else 0
+            tot_src += size
+            if info:
+                v = info["video"]
+                bitrate = size * 8 / info["duration"] / 1e6 if info["duration"] else 0
+                desc = (f"{v['codec']} {v['w']}x{v['h']} · {bitrate:.1f} Mbps" if v else "không có hình")
+                dur = core.fmt_time(info["duration"], ms=False)
+            else:
+                desc, dur = "đang đọc…", ""
+            est = self.estimates.get(f)
+            if est:
+                tot_est += est[0]
+                pct = (1 - est[0] / size) * 100 if size else 0
+                es = f"~{core.fmt_size(est[0])} ({-pct:+.0f}%)" if pct < 0 else f"~{core.fmt_size(est[0])} (−{pct:.0f}%)"
+            else:
+                es = ""
+            self.tree.insert("", "end", iid=str(n), values=(os.path.basename(f), dur, core.fmt_size(size), desc, es))
+        txt = f"{len(self.files)} file · tổng {core.fmt_size(tot_src)}"
+        if self.estimates and len(self.estimates) == len(self.files):
+            tt = sum(e[1] for e in self.estimates.values())
+            txt += (f"  →  ước tính ~{core.fmt_size(tot_est)} (giảm {(1 - tot_est / tot_src) * 100:.0f}%), "
+                    f"mất khoảng {self._fmt_dur(tt)}")
+        else:
+            txt += "  ·  Bấm “Ước tính dung lượng” để nén thử vài đoạn ngắn và xem trước kết quả."
+        self.status.config(text=txt)
+
+    @staticmethod
+    def _fmt_dur(s):
+        s = int(s)
+        return f"{s // 3600} giờ {s % 3600 // 60} phút" if s >= 3600 else (f"{s // 60} phút {s % 60}s" if s >= 60 else f"{s}s")
+
+    def probe_all(self):
+        for f in list(self.files):
+            if f not in self.infos:
+                try:
+                    self.infos[f] = core.probe(f)
+                except Exception:
+                    self.infos[f] = {"path": f, "duration": 0, "video": None, "audio": None}
+        self.root.after(0, self.refresh)
+
+    def add(self):
+        fs = filedialog.askopenfilenames(parent=self.root, title="Thêm video",
+                                         filetypes=[("Video", " ".join("*" + e for e in core.VIDEO_EXT))])
+        for f in fs:
+            if f not in self.files:
+                self.files.append(f)
+        self.refresh()
+        threading.Thread(target=self.probe_all, daemon=True).start()
+
+    def remove(self):
+        for i in sorted((int(x) for x in self.tree.selection()), reverse=True):
+            self.estimates.pop(self.files[i], None)
+            del self.files[i]
+        self.refresh()
+
+    def preview(self):
+        sel = self.tree.selection()
+        if sel:
+            core.play(self.files[int(sel[0])])
+
+    def set_busy(self, busy):
+        for b in (self.btn_go, self.btn_est):
+            b.config(state="disabled" if busy else "normal")
+        self.btn_cancel.config(state="normal" if busy else "disabled")
+
+    def ready(self):
+        if self._busy or not self.files:
+            return False
+        if any(f not in self.infos for f in self.files) or self.encoders is None:
+            messagebox.showinfo("VideoTool", "Đang đọc thông tin video / dò GPU, thử lại sau giây lát.",
+                                parent=self.root)
+            return False
+        return True
+
+    # ---- estimate
+    def estimate(self):
+        if not self.ready():
+            return
+        opts, files = self.opts(), list(self.files)
+
+        def job(prog, cancel):
+            for n, f in enumerate(files):
+                if cancel():
+                    raise core.Cancelled()
+                prog(n / len(files))
+                self.estimates[f] = core.estimate(self.infos[f], opts, cancel=cancel)
+                self.root.after(0, self.refresh)
+            prog(1.0)
+            return "est"
+        self.run_job("Đang nén thử", job, "")
+
+    def job_done(self, err, out, secs, res=None):
+        if res == "est":
+            self._busy = False
+            self.set_busy(False)
+            self.plabel.config(text="Ước tính xong")
+            self.refresh()
+            return
+        super().job_done(err, out, secs, res)
+
+    # ---- go
+    def go(self):
+        if not self.ready():
+            return
+        self.save_prefs()
+        opts = self.opts()
+        files = list(self.files)
+        infos = [self.infos[f] for f in files]
+        total = sum(i["duration"] for i in infos) or 1
+        skip = self.skip_bigger.get()
+
+        def job(prog, cancel):
+            done, lines, saved = 0.0, [], 0
+            for n, info in enumerate(infos):
+                src = info["path"]
+                out = core.compress_out_name(src)
+                self._label = f"Đang nén {n + 1}/{len(infos)}" if len(infos) > 1 else None
+                try:
+                    core.compress(info, out, opts,
+                                  lambda p, d=done, i=info: prog((d + p * i["duration"]) / total), cancel)
+                except core.Cancelled:
+                    if os.path.exists(out):
+                        os.remove(out)
+                    raise
+                except Exception as e:  # noqa: BLE001
+                    if os.path.exists(out):
+                        os.remove(out)
+                    lines.append(f"✗ {os.path.basename(src)}: lỗi — {str(e).splitlines()[-1][:120]}")
+                    done += info["duration"]
+                    continue
+                done += info["duration"]
+                a, b = os.path.getsize(src), os.path.getsize(out)
+                if skip and b >= a:
+                    os.remove(out)
+                    lines.append(f"• {os.path.basename(src)}: bản nén không nhỏ hơn ({core.fmt_size(b)}) → bỏ qua")
+                    continue
+                saved += a - b
+                self._last_out = out
+                lines.append(f"✓ {os.path.basename(out)}: {core.fmt_size(a)} → {core.fmt_size(b)} "
+                             f"(−{(1 - b / a) * 100:.0f}%)")
+            head = f"Đã nén {len(infos)} file, tiết kiệm {core.fmt_size(saved)}.\n\n" if len(infos) > 1 else ""
+            return head + "\n".join(lines[:25])
+        self._last_out = None
+        self.run_job("Đang nén", job, "")
+
+    def on_job_reveal(self):
+        return getattr(self, "_last_out", None)
+
+
 # ============================================================ cập nhật
 def auto_update_check(root, get_busy=lambda: False):
     """Kiểm tra GitHub ở nền; có bản mới thì hỏi người dùng."""
@@ -751,10 +1089,14 @@ def main():
         paths = gather_paths(mode, paths)
         if paths is None:
             return
-    elif mode == "merge-folder":
+    elif mode in ("merge-folder", "compress-folder"):
         folder = paths[0] if paths else os.getcwd()
         paths = core.videos_in_folder(folder)
-        mode = "merge"
+        mode = mode.split("-")[0]
+    elif mode == "compress":
+        paths = gather_paths(mode, paths)
+        if paths is None:
+            return
 
     root = tk.Tk()
     setup_style(root)
@@ -770,6 +1112,11 @@ def main():
         if not path:
             return
         win = EditWindow(root, path)
+    elif mode == "compress":
+        if not paths:
+            paths = list(filedialog.askopenfilenames(
+                title="Chọn video cần nén", filetypes=[("Video", " ".join("*" + e for e in core.VIDEO_EXT))]))
+        win = CompressWindow(root, paths)
     else:
         if not paths:
             paths = list(filedialog.askopenfilenames(

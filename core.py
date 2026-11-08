@@ -340,3 +340,138 @@ def play(path, t=0.0):
     if os.name == "nt":
         os.startfile(path)
     return False
+
+
+# ---------------------------------------------------------------- compress
+# Mỗi codec: (encoder, tham số chất lượng theo mức) — số càng lớn file càng nhỏ.
+QUALITY_LEVELS = ("near", "balanced", "small")
+QUALITY_LABELS = {"near": "Gần như nguyên bản", "balanced": "Cân bằng (khuyên dùng)", "small": "Nhỏ nhất (giảm nhẹ chất lượng)"}
+SPEED_LEVELS = ("fast", "medium", "slow")
+SPEED_LABELS = {"fast": "Nhanh", "medium": "Vừa", "slow": "Chậm (nhỏ hơn ~5-10%)"}
+
+CODECS = {
+    # key: (nhãn, encoder CPU, {GPU: encoder})
+    "hevc": ("H.265 / HEVC — nhỏ hơn H.264 ~40-50%, xem được hầu hết mọi nơi", "libx265",
+             {"nvenc": "hevc_nvenc", "qsv": "hevc_qsv", "amf": "hevc_amf"}),
+    "av1": ("AV1 — nhỏ nhất (thêm ~20-30% so với H.265), máy/TV cũ có thể không xem được", "libsvtav1",
+            {"nvenc": "av1_nvenc", "qsv": "av1_qsv", "amf": "av1_amf"}),
+    "h264": ("H.264 — tương thích tuyệt đối, nén kém nhất", "libx264",
+             {"nvenc": "h264_nvenc", "qsv": "h264_qsv", "amf": "h264_amf"}),
+}
+GPU_LABELS = {"nvenc": "NVIDIA", "qsv": "Intel", "amf": "AMD"}
+
+_CRF = {"libx265": (20, 24, 28), "libx264": (18, 22, 26), "libsvtav1": (27, 33, 39)}
+_HWQ = {"hevc": (22, 26, 30), "h264": (20, 24, 28), "av1": (28, 34, 40)}
+
+
+def available_encoders():
+    """Trả về set encoder dùng được thật (GPU được thử encode 1 khung hình)."""
+    ffmpeg = find_bin("ffmpeg")
+    listed = run([ffmpeg, "-hide_banner", "-encoders"]).stdout.decode("utf-8", "replace")
+    ok = set()
+    for key, (_, sw, hw) in CODECS.items():
+        if f" {sw} " in listed:
+            ok.add(sw)
+        for enc in hw.values():
+            if f" {enc} " not in listed:
+                continue
+            r = run([ffmpeg, "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i",
+                     "color=c=gray:s=640x360:r=30:d=0.2", "-c:v", enc, "-f", "null", "-"], timeout=20)
+            if r.returncode == 0:
+                ok.add(enc)
+    return ok
+
+
+def video_encode_args(codec, quality="balanced", speed="medium", gpu=None):
+    q = QUALITY_LEVELS.index(quality)
+    s = SPEED_LEVELS.index(speed)
+    _, sw, hw = CODECS[codec]
+    if gpu:
+        enc = hw[gpu]
+        v = _HWQ[codec][q]
+        if gpu == "nvenc":
+            args = ["-c:v", enc, "-preset", ("p4", "p6", "p7")[s], "-tune", "hq", "-rc", "vbr",
+                    "-cq", str(v), "-b:v", "0", "-spatial_aq", "1", "-temporal_aq", "1"]
+        elif gpu == "qsv":
+            args = ["-c:v", enc, "-preset", ("faster", "medium", "veryslow")[s], "-global_quality", str(v)]
+        else:  # amf
+            args = ["-c:v", enc, "-quality", ("speed", "balanced", "quality")[s], "-rc", "cqp",
+                    "-qp_i", str(v), "-qp_p", str(v + 2)] + (["-qp_b", str(v + 4)] if codec != "av1" else [])
+        args += ["-pix_fmt", "nv12" if gpu == "qsv" else "yuv420p"]
+    else:
+        crf = _CRF[sw][q]
+        if sw == "libx265":
+            args = ["-c:v", sw, "-preset", ("fast", "medium", "slow")[s], "-crf", str(crf),
+                    "-pix_fmt", "yuv420p10le", "-x265-params", "log-level=error:aq-mode=3"]
+        elif sw == "libsvtav1":
+            args = ["-c:v", sw, "-preset", ("8", "6", "4")[s], "-crf", str(crf),
+                    "-pix_fmt", "yuv420p10le", "-svtav1-params", "tune=0:enable-overlays=1"]
+        else:
+            args = ["-c:v", sw, "-preset", ("fast", "medium", "slow")[s], "-crf", str(crf),
+                    "-pix_fmt", "yuv420p"]
+    if codec == "hevc":
+        args += ["-tag:v", "hvc1"]   # để Windows Photos / iPhone / Mac mở được
+    return args
+
+
+def compress_args(info, codec, quality, speed, gpu, max_h=0, audio="aac128"):
+    """Tham số ffmpeg (sau -i) để nén 1 file."""
+    args = ["-map", "0:v:0", "-map", "0:a?", "-map_metadata", "0", "-sn", "-dn"]
+    v = info.get("video") or {}
+    if max_h and v.get("w") and v.get("h") and min(v["w"], v["h"]) > max_h:
+        if v["w"] >= v["h"]:
+            args += ["-vf", f"scale=-2:{max_h}:flags=lanczos"]
+        else:
+            args += ["-vf", f"scale={max_h}:-2:flags=lanczos"]
+    args += video_encode_args(codec, quality, speed, gpu)
+    if audio == "copy":
+        args += ["-c:a", "copy"]
+    else:
+        args += ["-c:a", "aac", "-b:a", {"aac96": "96k", "aac128": "128k", "aac192": "192k"}[audio]]
+    return args
+
+
+def compress_out_name(path):
+    base = os.path.splitext(path)[0]
+    return unique_path(base + "_compressed.mp4")
+
+
+def compress(info, out, opts, on_progress=None, cancel=None):
+    src = info["path"]
+    run_ffmpeg(["-i", src] + compress_args(info, **opts) + ["-movflags", "+faststart", out],
+               info["duration"], on_progress, cancel)
+
+
+def estimate(info, opts, sample=4.0, points=(0.15, 0.5, 0.85), cancel=None):
+    """Nén thử vài đoạn ngắn → (dung lượng ước tính bytes, thời gian ước tính giây)."""
+    dur = info["duration"]
+    if dur <= sample * len(points) * 1.5:
+        points, sample = (0.0,), max(0.5, dur)
+    tmpdir = tempfile.mkdtemp(prefix="videotool_est_")
+    total_size, total_len, t0 = 0, 0.0, None
+    import time as _t
+    try:
+        t0 = _t.time()
+        for n, p in enumerate(points):
+            if cancel and cancel():
+                raise Cancelled()
+            out = os.path.join(tmpdir, f"s{n}.mp4")
+            start = max(0.0, min(dur - sample, dur * p))
+            run_ffmpeg(["-ss", f"{start:.3f}", "-i", info["path"], "-t", f"{sample:.3f}"]
+                       + compress_args(info, **opts) + [out], sample)
+            total_size += os.path.getsize(out)
+            total_len += min(sample, dur - start)
+        el = _t.time() - t0
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+    if total_len <= 0:
+        return 0, 0
+    return total_size / total_len * dur, el / total_len * dur
+
+
+def fmt_size(b):
+    b = float(b)
+    for u in ("B", "KB", "MB", "GB"):
+        if b < 1024 or u == "GB":
+            return f"{b:.0f} {u}" if u in ("B", "KB") else f"{b:.1f} {u}"
+        b /= 1024

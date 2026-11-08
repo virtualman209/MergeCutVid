@@ -1,2 +1,3 @@
-1.1.1
-- Sửa lỗi menu chuột phải không hiện khi dùng Python bản Microsoft Store
+1.2.0
+- Thêm "Nén video (giảm dung lượng)": H.265 / AV1 / H.264, hỗ trợ GPU NVIDIA/Intel/AMD
+- Ước tính dung lượng trước khi nén, nén nhiều file một lúc, nén cả thư mục
