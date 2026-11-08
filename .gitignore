@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+config.json
+update_state.json
+bin/*
+!bin/.keep
