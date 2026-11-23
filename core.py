@@ -5,7 +5,6 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 import tempfile
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -129,8 +128,12 @@ def probe(path):
             info["video"] = {"codec": s.get("codec_name"), "w": s.get("width"), "h": s.get("height"),
                              "pix": s.get("pix_fmt"), "fps": round(fps, 3)}
         elif s.get("codec_type") == "audio" and info["audio"] is None:
+            try:
+                abr = int(s.get("bit_rate") or 0)
+            except ValueError:
+                abr = 0
             info["audio"] = {"codec": s.get("codec_name"), "rate": s.get("sample_rate"),
-                             "ch": s.get("channels")}
+                             "ch": s.get("channels"), "bitrate": abr}
     return info
 
 
@@ -475,3 +478,93 @@ def fmt_size(b):
         if b < 1024 or u == "GB":
             return f"{b:.0f} {u}" if u in ("B", "KB") else f"{b:.1f} {u}"
         b /= 1024
+
+
+# ---------------------------------------------------------------- video -> audio
+# key: (nhãn, đuôi file, tham số encoder, có lossy/bitrate không)
+AUDIO_FORMATS = {
+    "mp3": ("MP3 — phổ biến nhất, mở được ở mọi nơi", ".mp3", ["-c:a", "libmp3lame"], True),
+    "m4a": ("M4A (AAC) — hay hơn MP3 cùng dung lượng, hợp iPhone / Mac", ".m4a", ["-c:a", "aac"], True),
+    "opus": ("Opus — nhỏ nhất cho cùng chất lượng, hợp giọng nói / podcast", ".opus", ["-c:a", "libopus"], True),
+    "ogg": ("OGG Vorbis — định dạng mở, dùng cho game / web", ".ogg", ["-c:a", "libvorbis"], True),
+    "flac": ("FLAC — không mất chất lượng, nhỏ hơn WAV ~40-60%", ".flac", ["-c:a", "flac"], False),
+    "wav": ("WAV — không nén, file rất lớn, dùng để biên tập", ".wav", ["-c:a", "pcm_s16le"], False),
+    "copy": ("Giữ nguyên âm thanh gốc — nhanh nhất, không giảm chất lượng", None, ["-c:a", "copy"], False),
+}
+AUDIO_BITRATES = ("96k", "128k", "192k", "256k", "320k")
+_VORBIS_Q = {"96k": 2, "128k": 4, "192k": 6, "256k": 8, "320k": 9}
+# Đuôi file phù hợp khi giữ nguyên luồng âm thanh gốc (theo codec).
+_COPY_EXT = {"aac": ".m4a", "alac": ".m4a", "mp3": ".mp3", "opus": ".opus", "vorbis": ".ogg",
+             "flac": ".flac", "ac3": ".ac3", "eac3": ".eac3", "dts": ".dts", "mp2": ".mp2",
+             "wmav2": ".wma", "wmav1": ".wma", "amr_nb": ".amr"}
+
+
+def audio_encoder_missing(fmt):
+    """Tên encoder mà ffmpeg đang thiếu cho định dạng này (None nếu đủ)."""
+    enc = AUDIO_FORMATS[fmt][2][1]
+    if enc in ("copy", "aac", "flac", "pcm_s16le"):
+        return None
+    listed = run([find_bin("ffmpeg"), "-hide_banner", "-encoders"]).stdout.decode("utf-8", "replace")
+    return None if f" {enc} " in listed else enc
+
+
+def audio_ext(info, fmt):
+    ext = AUDIO_FORMATS[fmt][1]
+    if ext:
+        return ext
+    codec = (info.get("audio") or {}).get("codec") or ""
+    if codec.startswith("pcm_"):
+        return ".wav"
+    return _COPY_EXT.get(codec, ".mka")
+
+
+def audio_out_name(info, fmt, folder=None):
+    src = info["path"]
+    base = os.path.splitext(os.path.basename(src))[0]
+    return unique_path(os.path.join(folder or os.path.dirname(src), base + audio_ext(info, fmt)))
+
+
+def audio_args(fmt, bitrate="192k", channels=0, rate=0):
+    """Tham số ffmpeg (sau -i) để tách / chuyển âm thanh. channels/rate = 0 là giữ nguyên."""
+    _, _, enc, lossy = AUDIO_FORMATS[fmt]
+    args = ["-map", "0:a:0", "-vn", "-sn", "-dn", "-map_metadata", "0"] + enc
+    if fmt == "copy":
+        return args
+    if lossy:
+        if fmt == "opus" and int(bitrate.rstrip("k")) > 256:
+            bitrate = "256k"                  # libopus tối đa 256k/kênh; 256k đã là mức trong suốt
+        if fmt == "ogg":                      # Vorbis: dùng VBR theo chất lượng (-b:a dễ lỗi với mono)
+            args += ["-q:a", str(_VORBIS_Q.get(bitrate, 6))]
+        else:
+            args += ["-b:a", bitrate]
+    if channels:
+        args += ["-ac", str(channels)]
+    if rate and fmt != "opus":            # Opus luôn 48 kHz
+        args += ["-ar", str(rate)]
+    if fmt == "m4a":
+        args += ["-movflags", "+faststart"]
+    return args
+
+
+def estimate_audio_size(info, fmt, bitrate="192k", channels=0, rate=0):
+    """Ước tính dung lượng file âm thanh (bytes), 0 nếu không đoán được."""
+    a, dur = info.get("audio"), info.get("duration") or 0
+    if not a or not dur:
+        return 0
+    ch = channels or a.get("ch") or 2
+    sr = (rate if fmt != "opus" else 0) or int(a.get("rate") or 48000)
+    if fmt == "copy":
+        return a.get("bitrate", 0) * dur / 8
+    if fmt == "wav":
+        return sr * ch * 2 * dur
+    if fmt == "flac":
+        return sr * ch * 2 * dur * 0.55
+    kbps = int(bitrate.rstrip("k"))
+    if fmt == "opus":
+        kbps = min(kbps, 256)
+    return kbps * 1000 * dur / 8
+
+
+def extract_audio(info, out, opts, on_progress=None, cancel=None):
+    """opts: dict(fmt, bitrate, channels, rate)."""
+    run_ffmpeg(["-i", info["path"]] + audio_args(**opts) + [out], info["duration"], on_progress, cancel)

@@ -45,10 +45,13 @@ def menu_items(base):
     if base.endswith("\\Background") or base.endswith("\\Directory"):
         arg = "%V" if base.endswith("\\Background") else "%1"
         return [("mergefolder", "Ghép tất cả video trong thư mục này", cmd("merge-folder", arg)),
-                ("compressfolder", "Nén tất cả video trong thư mục này…", cmd("compress-folder", arg)), upd]
+                ("compressfolder", "Nén tất cả video trong thư mục này…", cmd("compress-folder", arg)),
+                ("audiofolder", "Chuyển tất cả video trong thư mục thành âm thanh…", cmd("audio-folder", arg)),
+                upd]
     return [("merge", "Ghép các video đã chọn thành 1 file", cmd("merge")),
             ("edit", "Cắt / xoá đoạn video…", cmd("edit")),
-            ("compress", "Nén video (giảm dung lượng)…", cmd("compress")), upd]
+            ("compress", "Nén video (giảm dung lượng)…", cmd("compress")),
+            ("audio", "Chuyển thành âm thanh (MP3, M4A, FLAC…)…", cmd("audio")), upd]
 
 
 def reg_text(install=True):

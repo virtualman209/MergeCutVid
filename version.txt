@@ -1,5 +1,4 @@
-1.3.0
-- Đổi tên thành MergenCut
-- Màn hình chính: mở từ Start Menu / Desktop / Taskbar, kéo thả file vào là dùng
-- Kéo thả file / thư mục vào mọi cửa sổ
-- Tuỳ chọn: tắt hỏi mở thư mục khi xong, tự đóng cửa sổ khi xong
+1.4.0
+- Mới: chuyển video thành âm thanh — MP3, M4A (AAC), Opus, OGG, FLAC, WAV hoặc giữ nguyên âm thanh gốc
+- Chọn bitrate, mono/stereo, tần số mẫu; xem trước dung lượng; chuyển nhiều file một lúc
+- Chuột phải video / thư mục → MergenCut ▸ Chuyển thành âm thanh

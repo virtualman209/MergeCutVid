@@ -2,7 +2,7 @@
 param([string]$AppDir = $PSScriptRoot)
 $ErrorActionPreference = "Stop"
 $repo = "virtualman209/MergeCutVid"
-$keep = @("config.json", "update_state.json", "compress_prefs.json", "settings.json", "bin", ".git")
+$keep = @("config.json", "update_state.json", "compress_prefs.json", "audio_prefs.json", "settings.json", "bin", ".git")
 $zip = Join-Path $env:TEMP "MergenCut_update.zip"
 $tmp = Join-Path $env:TEMP "MergenCut_update"
 try {
