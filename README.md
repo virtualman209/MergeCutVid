@@ -1,10 +1,11 @@
 # MergenCut
 
-Ghép, cắt và nén video nhanh trên Windows: mở từ Start Menu / Taskbar, hoặc chuột phải ngay trong Explorer (giống WinRAR).
+Ghép, cắt, nén video và tách âm thanh nhanh trên Windows: mở từ Start Menu / Taskbar, hoặc chuột phải ngay trong Explorer (giống WinRAR).
 
 - **Ghép video**: chọn `video_part_1 … part_N` → chuột phải → *MergenCut ▸ Ghép các video đã chọn*. Tự sắp đúng thứ tự số. Nếu các file cùng định dạng thì ghép không encode lại (vài giây là xong, giữ nguyên chất lượng).
 - **Cắt / xoá đoạn**: xem trước từng frame, `I` / `O` đánh dấu, `Enter` thêm đoạn, `Ctrl+S` lưu. Có chế độ nhanh (không encode) và cắt chính xác từng frame.
 - **Nén video**: H.265 / AV1 / H.264, có thể dùng GPU NVIDIA / Intel / AMD, ước tính dung lượng trước khi nén, nén nhiều file một lúc.
+- **Chuyển video thành âm thanh**: MP3, M4A (AAC), Opus, OGG Vorbis, FLAC, WAV, hoặc giữ nguyên âm thanh gốc (không encode, nhanh nhất). Chọn bitrate 96–320 kbps, mono / stereo, 44.1 / 48 kHz; chuyển nhiều file hoặc cả thư mục một lúc.
 - **Kéo thả** file hoặc thư mục vào bất kỳ cửa sổ nào.
 - **Tự cập nhật** từ GitHub (hỏi trước khi cập nhật).
 
