@@ -11,6 +11,8 @@ APP_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.path.join(APP_DIR, "config.json")
 VIDEO_EXT = (".mp4", ".mkv", ".mov", ".avi", ".ts", ".m2ts", ".mts", ".flv",
              ".webm", ".wmv", ".m4v", ".3gp", ".mpg", ".mpeg", ".vob")
+AUDIO_EXT = (".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg", ".oga", ".opus", ".wma", ".ac3",
+             ".amr", ".aiff", ".aif", ".mka")
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
 
@@ -60,6 +62,10 @@ def natural_key(path):
 
 def is_video(path):
     return os.path.splitext(path)[1].lower() in VIDEO_EXT
+
+
+def is_audio(path):
+    return os.path.splitext(path)[1].lower() in AUDIO_EXT
 
 
 def videos_in_folder(folder):
@@ -568,3 +574,62 @@ def estimate_audio_size(info, fmt, bitrate="192k", channels=0, rate=0):
 def extract_audio(info, out, opts, on_progress=None, cancel=None):
     """opts: dict(fmt, bitrate, channels, rate)."""
     run_ffmpeg(["-i", info["path"]] + audio_args(**opts) + [out], info["duration"], on_progress, cancel)
+
+
+# ---------------------------------------------------------------- nhập audio vào video
+# Codec âm thanh được chép thẳng (không encode lại) theo từng loại file video.
+_MUX_COPY = {".mp4": {"aac", "mp3"}, ".m4v": {"aac", "mp3"}, ".mov": {"aac", "mp3"}, ".3gp": {"aac"},
+             ".webm": {"opus", "vorbis"}, ".ts": {"aac", "mp3", "ac3"}, ".m2ts": {"aac", "ac3"},
+             ".mts": {"aac", "ac3"}, ".flv": {"aac", "mp3"}, ".mkv": None}   # None = nhận mọi codec
+
+
+def mux_out_ext(video_path):
+    ext = os.path.splitext(video_path)[1].lower()
+    return ext if ext in _MUX_COPY else ".mkv"      # avi, wmv, mpg… → mkv (chứa được mọi codec)
+
+
+def mux_out_name(vinfo, ainfo, folder=None):
+    vbase = os.path.splitext(os.path.basename(vinfo["path"]))[0]
+    abase = os.path.splitext(os.path.basename(ainfo["path"]))[0][:40].strip()
+    return unique_path(os.path.join(folder or os.path.dirname(vinfo["path"]),
+                                    f"{vbase} + {abase}{mux_out_ext(vinfo['path'])}"))
+
+
+def mux_args(vinfo, ainfo, out, mode="replace", loop=False, vol_new=100, vol_orig=100):
+    """Tham số ffmpeg ghép hình của video với âm thanh của file kia.
+    mode: replace = thay tiếng gốc; mix = trộn với tiếng gốc (nếu video có tiếng)."""
+    ext = os.path.splitext(out)[1].lower()
+    vdur = vinfo.get("duration") or 0
+    if mode == "mix" and not vinfo.get("audio"):
+        mode = "replace"
+    args = (["-stream_loop", "-1"] if loop else []) + ["-i", ainfo["path"]]
+    args = ["-i", vinfo["path"]] + args
+    args += ["-map", "0:v:0"]
+    if mode == "mix":
+        f = (f"[0:a:0]volume={vol_orig / 100:g}[a0];[1:a:0]volume={vol_new / 100:g}[a1];"
+             f"[a0][a1]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]")
+        args += ["-filter_complex", f, "-map", "[aout]"]
+    else:
+        args += ["-map", "1:a:0"]
+        if vol_new != 100:
+            args += ["-af", f"volume={vol_new / 100:g}"]
+    args += ["-c:v", "copy"]
+    ok = _MUX_COPY.get(ext, None) if ext in _MUX_COPY else set()
+    codec = (ainfo.get("audio") or {}).get("codec")
+    can_copy = mode == "replace" and not loop and vol_new == 100 and (ok is None or codec in ok)
+    if can_copy:
+        args += ["-c:a", "copy"]
+    elif ext == ".webm":
+        args += ["-c:a", "libopus", "-b:a", "160k"]
+    else:
+        args += ["-c:a", "aac", "-b:a", "192k"]
+    if vdur:
+        args += ["-t", f"{vdur:.3f}"]               # luôn theo độ dài video
+    args += ["-map_metadata", "0"] + _out_flags(out) + [out]
+    return args
+
+
+def mux(vinfo, ainfo, out, opts, on_progress=None, cancel=None):
+    """opts: dict(mode, loop, vol_new, vol_orig)."""
+    run_ffmpeg(mux_args(vinfo, ainfo, out, **opts), vinfo.get("duration") or ainfo.get("duration") or 0,
+               on_progress, cancel)

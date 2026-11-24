@@ -7,6 +7,7 @@ Cách gọi:
     pythonw mergencut.pyw compress <file1> [...]      # nén video
     pythonw mergencut.pyw audio <file1> [...]         # chuyển video thành âm thanh (MP3, M4A, …)
     pythonw mergencut.pyw audio-folder <thư mục>      # chuyển tất cả video trong thư mục
+    pythonw mergencut.pyw mux <audio> <video> [...]   # nhập audio vào video (thay / trộn tiếng)
     pythonw mergencut.pyw                             # màn hình chính (kéo thả file vào)
 """
 import base64
@@ -145,13 +146,13 @@ def set_setting(key, value):
 
 
 # ============================================================ kéo thả file (Windows)
-def expand_paths(paths):
-    """File video giữ nguyên; thư mục → các video bên trong (sắp theo tên)."""
+def expand_paths(paths, audio=False):
+    """File video (và audio nếu audio=True) giữ nguyên; thư mục → các video bên trong (sắp theo tên)."""
     out = []
     for p in paths:
         if os.path.isdir(p):
             out += core.videos_in_folder(p)
-        elif os.path.isfile(p) and core.is_video(p):
+        elif os.path.isfile(p) and (core.is_video(p) or (audio and core.is_audio(p))):
             out.append(p)
     return out
 
@@ -1441,20 +1442,322 @@ class AudioWindow(ProgressMixin):
         return getattr(self, "_last_out", None)
 
 
+# ============================================================ cửa sổ NHẬP AUDIO VÀO VIDEO
+class MuxWindow(ProgressMixin):
+    PREFS = os.path.join(core.APP_DIR, "mux_prefs.json")
+
+    def __init__(self, root, paths):
+        self.root = root
+        root.title("MergenCut — Nhập audio vào video")
+        center(root, 780, 620)
+        self.files = []          # mọi file đã thêm (video + audio), giữ thứ tự
+        self.infos = {}
+        self.source = None       # file lấy âm thanh
+        cfg = self.load_prefs()
+
+        main = ttk.Frame(root, padding=12)
+        main.pack(fill="both", expand=True)
+
+        src = ttk.LabelFrame(main, text="Lấy âm thanh từ", padding=10)
+        src.pack(fill="x")
+        self.src_var = tk.StringVar()
+        self.src_box = ttk.Combobox(src, textvariable=self.src_var, state="readonly", width=70)
+        self.src_box.pack(side="left", fill="x", expand=True)
+        self.src_box.bind("<<ComboboxSelected>>", lambda e: self.pick_source(self.src_box.current()))
+        ttk.Button(src, text="Chọn file…", command=self.add_audio).pack(side="left", padx=(6, 0))
+
+        ttk.Label(main, text="Video sẽ được thay âm thanh (giữ nguyên hình, không encode lại):"
+                  ).pack(anchor="w", pady=(10, 2))
+        mid = ttk.Frame(main)
+        mid.pack(fill="both", expand=True)
+        cols = ("name", "dur", "info")
+        self.tree = ttk.Treeview(mid, columns=cols, show="headings", height=6)
+        for c, t, w in (("name", "Tên video", 300), ("dur", "Thời lượng", 80), ("info", "Ghi chú", 240)):
+            self.tree.heading(c, text=t)
+            self.tree.column(c, width=w, anchor="w")
+        sb = ttk.Scrollbar(mid, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=sb.set)
+        self.tree.pack(side="left", fill="both", expand=True)
+        sb.pack(side="left", fill="y")
+        side = ttk.Frame(mid, padding=(8, 0, 0, 0))
+        side.pack(side="left", fill="y")
+        ttk.Button(side, text="+ Thêm…", width=11, command=self.add_video).pack(pady=2)
+        ttk.Button(side, text="✕ Bỏ", width=11, command=self.remove).pack(pady=2)
+        ttk.Button(side, text="▶ Xem", width=11, command=self.preview).pack(pady=2)
+
+        opt = ttk.LabelFrame(main, text="Tuỳ chọn", padding=10)
+        opt.pack(fill="x", pady=10)
+        self.mode = tk.StringVar(value=cfg.get("mode", "replace"))
+        r1 = ttk.Frame(opt)
+        r1.pack(fill="x")
+        ttk.Radiobutton(r1, text="Thay hẳn tiếng gốc", variable=self.mode, value="replace",
+                        command=self.opts_changed).pack(side="left")
+        ttk.Radiobutton(r1, text="Trộn chung với tiếng gốc (vd. thêm nhạc nền)", variable=self.mode,
+                        value="mix", command=self.opts_changed).pack(side="left", padx=16)
+
+        r2 = ttk.Frame(opt)
+        r2.pack(fill="x", pady=(8, 0))
+        ttk.Label(r2, text="Âm lượng audio mới:").pack(side="left")
+        self.vol_new = tk.IntVar(value=cfg.get("vol_new", 100))
+        ttk.Spinbox(r2, from_=0, to=300, increment=10, width=5, textvariable=self.vol_new,
+                    command=self.opts_changed).pack(side="left", padx=(4, 0))
+        ttk.Label(r2, text="%").pack(side="left")
+        self.orig_lbl = ttk.Label(r2, text="      Tiếng gốc:")
+        self.orig_lbl.pack(side="left")
+        self.vol_orig = tk.IntVar(value=cfg.get("vol_orig", 100))
+        self.orig_spin = ttk.Spinbox(r2, from_=0, to=300, increment=10, width=5, textvariable=self.vol_orig)
+        self.orig_spin.pack(side="left", padx=(4, 0))
+        ttk.Label(r2, text="%").pack(side="left")
+
+        self.loop = tk.BooleanVar(value=cfg.get("loop", False))
+        ttk.Checkbutton(opt, text="Lặp lại audio nếu ngắn hơn video", variable=self.loop,
+                        command=self.opts_changed).pack(anchor="w", pady=(8, 0))
+        ttk.Label(opt, text="Audio dài hơn video sẽ tự cắt cho vừa. File mới lưu cạnh video, "
+                            "tên dạng “video + audio.mp4”, file gốc giữ nguyên.",
+                  style="Hint.TLabel", wraplength=730).pack(anchor="w", pady=(4, 0))
+
+        self.status = ttk.Label(main, text="", style="Hint.TLabel", wraplength=750)
+        self.status.pack(anchor="w")
+        self.build_finish_opts(main).pack(fill="x", pady=(6, 0))
+        bottom = ttk.Frame(main)
+        bottom.pack(fill="x", pady=(8, 0))
+        self.build_progress(bottom).pack(side="left", fill="x", expand=True)
+        self.btn_cancel = ttk.Button(bottom, text="Huỷ", state="disabled",
+                                     command=lambda: setattr(self, "_cancel", True))
+        self.btn_cancel.pack(side="right", padx=(8, 0))
+        self.btn_go = ttk.Button(bottom, text="Nhập ngay", style="Big.TButton", command=self.go)
+        self.btn_go.pack(side="right", padx=(8, 0))
+
+        root.bind("<Return>", lambda e: self.go())
+        root.bind("<Delete>", lambda e: self.remove())
+        root.protocol("WM_DELETE_WINDOW", self.on_close)
+        root._on_drop = self.drop
+        self.drop(paths)
+        self.opts_changed()
+
+    # ---- prefs
+    def load_prefs(self):
+        try:
+            with open(self.PREFS, encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def save_prefs(self):
+        try:
+            with open(self.PREFS, "w", encoding="utf-8") as f:
+                json.dump({"mode": self.mode.get(), "loop": self.loop.get(),
+                           "vol_new": self.vol(self.vol_new), "vol_orig": self.vol(self.vol_orig)}, f)
+        except OSError:
+            pass
+
+    @staticmethod
+    def vol(var):
+        try:
+            return max(0, min(300, int(var.get())))
+        except (tk.TclError, ValueError):
+            return 100
+
+    def opts_changed(self):
+        self.orig_spin.config(state="normal" if self.mode.get() == "mix" else "disabled")
+        self.refresh()
+
+    # ---- files
+    def videos(self):
+        return [f for f in self.files if f != self.source and core.is_video(f)]
+
+    def drop(self, paths):
+        if self._busy:
+            return
+        new = []
+        for p in paths:
+            if os.path.isdir(p):
+                new += core.videos_in_folder(p)
+            elif os.path.isfile(p) and (core.is_video(p) or core.is_audio(p)):
+                new.append(p)
+        new = [p for p in new if p not in self.files]
+        self.files += new
+        if self.source is None or self.source not in self.files:
+            auds = [p for p in new if core.is_audio(p)]
+            if auds:
+                self.source = auds[0]
+            elif len(self.files) >= 2:
+                self.source = self.files[-1]     # 2 video: mặc định lấy tiếng của file sau, đổi được
+        elif any(core.is_audio(p) for p in new):
+            self.source = [p for p in new if core.is_audio(p)][0]
+        self.refresh()
+        threading.Thread(target=self.probe_all, daemon=True).start()
+
+    def probe_all(self):
+        for f in list(self.files):
+            if f not in self.infos:
+                try:
+                    self.infos[f] = core.probe(f)
+                except Exception:
+                    self.infos[f] = {"path": f, "duration": 0, "video": None, "audio": None}
+        self.root.after(0, self.refresh)
+
+    def add_audio(self):
+        exts = " ".join("*" + e for e in core.AUDIO_EXT + core.VIDEO_EXT)
+        f = filedialog.askopenfilename(parent=self.root, title="Chọn file lấy âm thanh",
+                                       filetypes=[("Âm thanh / video", exts), ("Tất cả", "*.*")])
+        if f:
+            if f not in self.files:
+                self.files.append(f)
+            self.source = f
+            self.refresh()
+            threading.Thread(target=self.probe_all, daemon=True).start()
+
+    def add_video(self):
+        fs = filedialog.askopenfilenames(parent=self.root, title="Thêm video",
+                                         filetypes=[("Video", " ".join("*" + e for e in core.VIDEO_EXT)),
+                                                    ("Tất cả", "*.*")])
+        src = self.source
+        self.drop([f for f in fs if core.is_video(f)])
+        self.source = src if src in self.files else self.source
+        self.refresh()
+
+    def pick_source(self, idx):
+        if 0 <= idx < len(self._src_choices):
+            self.source = self._src_choices[idx]
+        self.refresh()
+
+    def remove(self):
+        vids = self.videos()
+        for i in sorted((int(x) for x in self.tree.selection()), reverse=True):
+            self.files.remove(vids[i])
+        self.refresh()
+
+    def preview(self):
+        sel = self.tree.selection()
+        if sel:
+            core.play(self.videos()[int(sel[0])])
+
+    def set_busy(self, busy):
+        self.btn_go.config(state="disabled" if busy else "normal")
+        self.btn_cancel.config(state="normal" if busy else "disabled")
+
+    def refresh(self):
+        # danh sách nguồn âm thanh: file audio trước, rồi tới video
+        self._src_choices = sorted(self.files, key=lambda f: (not core.is_audio(f), self.files.index(f)))
+        labels = []
+        for f in self._src_choices:
+            i = self.infos.get(f)
+            d = f"  ({core.fmt_time(i['duration'], ms=False)})" if i and i["duration"] else ""
+            bad = "  ⚠ không có tiếng" if i and not i["audio"] else ""
+            labels.append(os.path.basename(f) + d + bad)
+        self.src_box.config(values=labels)
+        if self.source in self._src_choices:
+            self.src_box.current(self._src_choices.index(self.source))
+        else:
+            self.src_var.set("— chưa chọn —")
+
+        self.tree.delete(*self.tree.get_children())
+        ainfo = self.infos.get(self.source)
+        adur = ainfo["duration"] if ainfo else 0
+        for n, f in enumerate(self.videos()):
+            info = self.infos.get(f)
+            if not info:
+                dur, note = "", "đang đọc…"
+            else:
+                dur = core.fmt_time(info["duration"], ms=False)
+                if not info["video"]:
+                    note = "⚠ không có hình → bỏ qua"
+                elif adur and info["duration"]:
+                    diff = adur - info["duration"]
+                    if diff > 0.5:
+                        note = f"audio dài hơn {core.fmt_time(diff, ms=False)} → cắt bớt"
+                    elif diff < -0.5:
+                        note = ("audio ngắn hơn → lặp lại" if self.loop.get()
+                                else f"audio thiếu {core.fmt_time(-diff, ms=False)} → cuối im")
+                    else:
+                        note = "vừa khớp"
+                else:
+                    note = ""
+                if self.mode.get() == "mix" and not info["audio"]:
+                    note += " · video không có tiếng gốc"
+            self.tree.insert("", "end", iid=str(n), values=(os.path.basename(f), dur, note))
+        if not self.files:
+            txt = "Kéo thả 1 file audio và video cần nhập vào cửa sổ này, hoặc dùng các nút Chọn / Thêm."
+        elif not self.source:
+            txt = "Chọn file lấy âm thanh ở trên."
+        elif not self.videos():
+            txt = "Thêm video cần nhập âm thanh (nút “+ Thêm…” hoặc kéo thả)."
+        else:
+            txt = f"{len(self.videos())} video sẽ nhận âm thanh từ “{os.path.basename(self.source)}”."
+        self.status.config(text=txt)
+
+    # ---- go
+    def go(self):
+        if self._busy:
+            return
+        vids = self.videos()
+        if not self.source or not vids:
+            messagebox.showinfo("MergenCut", "Cần chọn 1 file âm thanh và ít nhất 1 video.", parent=self.root)
+            return
+        if any(f not in self.infos for f in vids + [self.source]):
+            messagebox.showinfo("MergenCut", "Đang đọc thông tin file, thử lại sau giây lát.", parent=self.root)
+            return
+        ainfo = self.infos[self.source]
+        if not ainfo["audio"]:
+            messagebox.showerror("MergenCut", f"“{os.path.basename(self.source)}” không có âm thanh.",
+                                 parent=self.root)
+            return
+        self.save_prefs()
+        opts = dict(mode=self.mode.get(), loop=self.loop.get(),
+                    vol_new=self.vol(self.vol_new), vol_orig=self.vol(self.vol_orig))
+        infos = [self.infos[f] for f in vids]
+        total = sum(i["duration"] for i in infos if i["video"]) or 1
+
+        def job(prog, cancel):
+            done, lines, n_ok = 0.0, [], 0
+            for n, info in enumerate(infos):
+                name = os.path.basename(info["path"])
+                if not info["video"]:
+                    lines.append(f"• {name}: không có hình → bỏ qua")
+                    continue
+                out = core.mux_out_name(info, ainfo)
+                self._label = f"Đang nhập {n + 1}/{len(infos)}" if len(infos) > 1 else None
+                try:
+                    core.mux(info, ainfo, out, opts,
+                             lambda p, d=done, i=info: prog((d + p * i["duration"]) / total), cancel)
+                except core.Cancelled:
+                    if os.path.exists(out):
+                        os.remove(out)
+                    raise
+                except Exception as e:  # noqa: BLE001
+                    if os.path.exists(out):
+                        os.remove(out)
+                    lines.append(f"✗ {name}: lỗi — {str(e).strip().splitlines()[-1][:120]}")
+                    done += info["duration"]
+                    continue
+                done += info["duration"]
+                n_ok += 1
+                self._last_out = out
+                lines.append(f"✓ {os.path.basename(out)}")
+            head = f"Đã nhập âm thanh vào {n_ok}/{len(infos)} video.\n\n" if len(infos) > 1 else ""
+            return head + "\n".join(lines[:25])
+        self._last_out = None
+        self.run_job("Đang nhập", job, "")
+
+    def on_job_reveal(self):
+        return getattr(self, "_last_out", None)
+
+
 # ============================================================ MÀN HÌNH CHÍNH
 class HomeWindow:
     def __init__(self, root, paths=()):
         self.root = root
         root.title("MergenCut")
-        center(root, 640, 520)
-        self.files = expand_paths(paths)
+        center(root, 640, 590)
+        self.files = expand_paths(paths, audio=True)
 
         main = ttk.Frame(root, padding=16)
         main.pack(fill="both", expand=True)
         head = ttk.Frame(main)
         head.pack(fill="x")
         ttk.Label(head, text="MergenCut", font=("Segoe UI", 18, "bold")).pack(side="left")
-        ttk.Label(head, text="  ghép · cắt · nén video · tách âm thanh", style="Hint.TLabel").pack(side="left", pady=(8, 0))
+        ttk.Label(head, text="  ghép · cắt · nén video · tách / nhập âm thanh", style="Hint.TLabel").pack(side="left", pady=(8, 0))
 
         self.zone = tk.Canvas(main, height=150, bg="#f7f9fc", highlightthickness=0, cursor="hand2")
         self.zone.pack(fill="x", pady=12)
@@ -1471,10 +1774,11 @@ class HomeWindow:
         for n, (txt, sub, mode) in enumerate((("Ghép video", "nối nhiều file thành 1", "merge"),
                                                 ("Cắt video", "xoá / giữ các đoạn", "edit"),
                                                 ("Nén video", "giảm dung lượng", "compress"),
-                                                ("Chuyển sang âm thanh", "MP3, M4A, FLAC, WAV…", "audio"))):
+                                                ("Chuyển sang âm thanh", "MP3, M4A, FLAC, WAV…", "audio"),
+                                                ("Nhập audio vào video", "thay / trộn tiếng cho video", "mux"))):
             acts.columnconfigure(n % 2, weight=1, uniform="act")
             b = ttk.Button(acts, text=f"{txt}\n{sub}", style="Home.TButton", command=lambda m=mode: self.open(m))
-            b.grid(row=n // 2, column=n % 2, sticky="nsew", padx=4, pady=4)
+            b.grid(row=n // 2, column=n % 2, columnspan=2 if n == 4 else 1, sticky="nsew", padx=4, pady=4)
 
         foot = ttk.Frame(main)
         foot.pack(fill="x", side="bottom")
@@ -1497,24 +1801,25 @@ class HomeWindow:
         w, h = c.winfo_width(), c.winfo_height()
         c.create_rectangle(3, 3, w - 3, h - 3, outline="#9bb3d6", dash=(6, 4), width=2)
         if not self.files:
-            c.create_text(w // 2, h // 2 - 12, text="Kéo thả video hoặc thư mục vào đây",
+            c.create_text(w // 2, h // 2 - 12, text="Kéo thả video, audio hoặc thư mục vào đây",
                           font=("Segoe UI", 13), fill="#4a6a99")
             c.create_text(w // 2, h // 2 + 16, text="hoặc bấm để chọn file", font=("Segoe UI", 9), fill="#888")
         else:
             names = [os.path.basename(f) for f in self.files]
             shown = names[:5] + ([f"… và {len(names) - 5} file khác"] if len(names) > 5 else [])
-            c.create_text(w // 2, 18, text=f"{len(names)} video đã chọn", font=("Segoe UI", 11, "bold"),
+            c.create_text(w // 2, 18, text=f"{len(names)} file đã chọn", font=("Segoe UI", 11, "bold"),
                           fill="#2d4f80")
             c.create_text(w // 2, 40, text="\n".join(shown), anchor="n", font=("Segoe UI", 9), fill="#444",
                           justify="center")
 
     def drop(self, paths):
-        self.files += [p for p in expand_paths(paths) if p not in self.files]
+        self.files += [p for p in expand_paths(paths, audio=True) if p not in self.files]
         self.draw_zone()
 
     def pick(self):
-        fs = filedialog.askopenfilenames(parent=self.root, title="Chọn video",
+        fs = filedialog.askopenfilenames(parent=self.root, title="Chọn video / audio",
                                          filetypes=[("Video", " ".join("*" + e for e in core.VIDEO_EXT)),
+                                                    ("Âm thanh", " ".join("*" + e for e in core.AUDIO_EXT)),
                                                     ("Tất cả", "*.*")])
         self.drop(list(fs))
 
@@ -1524,6 +1829,10 @@ class HomeWindow:
 
     def open(self, mode):
         files = sorted(self.files, key=core.natural_key)
+        if mode != "mux":
+            files = [f for f in files if core.is_video(f)]
+        else:
+            files = list(self.files)
         if mode == "edit":
             if not files:
                 f = filedialog.askopenfilename(parent=self.root, title="Chọn video cần cắt",
@@ -1532,7 +1841,8 @@ class HomeWindow:
                     return
                 files = [f]
         clear_root(self.root)
-        win = {"merge": MergeWindow, "compress": CompressWindow, "audio": AudioWindow}.get(mode)
+        win = {"merge": MergeWindow, "compress": CompressWindow, "audio": AudioWindow,
+               "mux": MuxWindow}.get(mode)
         win = win(self.root, files) if win else EditWindow(self.root, files[0])
         self.root._win = win
         self.root.title(self.root.title() + f"  (v{local_version()})")
@@ -1631,7 +1941,7 @@ def main():
         root.mainloop()
         return
 
-    if mode in ("merge", "compress", "audio"):
+    if mode in ("merge", "compress", "audio", "mux"):
         paths = gather_paths(mode, paths)      # Explorer gọi 1 lần / file → gom lại
         if paths is None:
             return
@@ -1656,6 +1966,8 @@ def main():
         win = MergeWindow(root, paths)
     elif mode == "audio":
         win = AudioWindow(root, paths)
+    elif mode == "mux":
+        win = MuxWindow(root, paths)
     else:
         win = HomeWindow(root, paths)
     root._win = win
