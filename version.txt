@@ -1,4 +1,4 @@
-1.4.0
-- Mới: chuyển video thành âm thanh — MP3, M4A (AAC), Opus, OGG, FLAC, WAV hoặc giữ nguyên âm thanh gốc
-- Chọn bitrate, mono/stereo, tần số mẫu; xem trước dung lượng; chuyển nhiều file một lúc
-- Chuột phải video / thư mục → MergenCut ▸ Chuyển thành âm thanh
+1.5.0
+- Mới: nhập audio vào video — chọn 1 audio + video, chuột phải › MergenCut › Nhập audio vào video
+- Thay hẳn tiếng gốc hoặc trộn chung (thêm nhạc nền), chỉnh âm lượng, lặp audio nếu ngắn hơn video
+- Giữ nguyên hình, không encode lại video nên rất nhanh

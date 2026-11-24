@@ -6,5 +6,6 @@ bin/*
 !bin/.keep
 compress_prefs.json
 audio_prefs.json
+mux_prefs.json
 settings.json
 update_error.txt

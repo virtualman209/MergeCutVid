@@ -36,22 +36,28 @@ def cmd(mode, arg="%1"):
 
 
 def bases():
-    return [f"{ROOT}\\SystemFileAssociations\\{ext}" for ext in core.VIDEO_EXT] + \
+    return [f"{ROOT}\\SystemFileAssociations\\{ext}" for ext in core.VIDEO_EXT + core.AUDIO_EXT] + \
            [f"{ROOT}\\Directory", f"{ROOT}\\Directory\\Background"]
 
 
 def menu_items(base):
-    upd = ("update", "Kiểm tra cập nhật", cmd("update", None))
+    """(tên khoá, nhãn, lệnh). Tên khoá cố định: chọn lẫn audio + video thì Explorer
+    chỉ gọi lệnh cho mọi file khi khoá trùng tên ở cả hai loại file (vd. 05mux)."""
+    upd = ("09update", "Kiểm tra cập nhật", cmd("update", None))
+    mux = ("05mux", "Nhập audio vào video…", cmd("mux"))
     if base.endswith("\\Background") or base.endswith("\\Directory"):
         arg = "%V" if base.endswith("\\Background") else "%1"
-        return [("mergefolder", "Ghép tất cả video trong thư mục này", cmd("merge-folder", arg)),
-                ("compressfolder", "Nén tất cả video trong thư mục này…", cmd("compress-folder", arg)),
-                ("audiofolder", "Chuyển tất cả video trong thư mục thành âm thanh…", cmd("audio-folder", arg)),
+        return [("01mergefolder", "Ghép tất cả video trong thư mục này", cmd("merge-folder", arg)),
+                ("02compressfolder", "Nén tất cả video trong thư mục này…", cmd("compress-folder", arg)),
+                ("03audiofolder", "Chuyển tất cả video trong thư mục thành âm thanh…", cmd("audio-folder", arg)),
                 upd]
-    return [("merge", "Ghép các video đã chọn thành 1 file", cmd("merge")),
-            ("edit", "Cắt / xoá đoạn video…", cmd("edit")),
-            ("compress", "Nén video (giảm dung lượng)…", cmd("compress")),
-            ("audio", "Chuyển thành âm thanh (MP3, M4A, FLAC…)…", cmd("audio")), upd]
+    if base.lower().endswith(core.AUDIO_EXT):
+        return [mux, upd]
+    return [("01merge", "Ghép các video đã chọn thành 1 file", cmd("merge")),
+            ("02edit", "Cắt / xoá đoạn video…", cmd("edit")),
+            ("03compress", "Nén video (giảm dung lượng)…", cmd("compress")),
+            ("04audio", "Chuyển thành âm thanh (MP3, M4A, FLAC…)…", cmd("audio")),
+            mux, upd]
 
 
 def reg_text(install=True):
@@ -64,8 +70,8 @@ def reg_text(install=True):
             continue
         out += [f"[{root}]", '"MUIVerb"="MergenCut"', '"SubCommands"=""', '"MultiSelectModel"="Player"']
         out += [icon, ""] if icon else [""]
-        for n, (verb, label, command) in enumerate(menu_items(base), 1):
-            k = f"{root}\\shell\\{n:02d}{verb}"
+        for verb, label, command in menu_items(base):
+            k = f"{root}\\shell\\{verb}"
             out += [f"[{k}]", f'"MUIVerb"="{esc(label)}"', '"MultiSelectModel"="Player"']
             out += [icon] if icon else []
             out += ["", f"[{k}\\command]", f'@="{esc(command)}"', ""]

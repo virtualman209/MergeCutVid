@@ -6,6 +6,7 @@ Ghép, cắt, nén video và tách âm thanh nhanh trên Windows: mở từ Star
 - **Cắt / xoá đoạn**: xem trước từng frame, `I` / `O` đánh dấu, `Enter` thêm đoạn, `Ctrl+S` lưu. Có chế độ nhanh (không encode) và cắt chính xác từng frame.
 - **Nén video**: H.265 / AV1 / H.264, có thể dùng GPU NVIDIA / Intel / AMD, ước tính dung lượng trước khi nén, nén nhiều file một lúc.
 - **Chuyển video thành âm thanh**: MP3, M4A (AAC), Opus, OGG Vorbis, FLAC, WAV, hoặc giữ nguyên âm thanh gốc (không encode, nhanh nhất). Chọn bitrate 96–320 kbps, mono / stereo, 44.1 / 48 kHz; chuyển nhiều file hoặc cả thư mục một lúc.
+- **Nhập audio vào video**: chọn 1 file audio và video, chuột phải → *Nhập audio vào video*. Thay hẳn tiếng gốc hoặc trộn chung (thêm nhạc nền), chỉnh âm lượng, lặp audio nếu ngắn hơn video. Hình giữ nguyên, không encode lại.
 - **Kéo thả** file hoặc thư mục vào bất kỳ cửa sổ nào.
 - **Tự cập nhật** từ GitHub (hỏi trước khi cập nhật).
 
